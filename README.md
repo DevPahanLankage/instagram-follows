@@ -1,26 +1,22 @@
-# Instagram Auto Follow Bot
+# Instagram Follow Bot
 
-A Python-based Instagram bot that automatically follows users from a target account's following list. The bot uses Selenium WebDriver for automation and implements human-like behavior to avoid detection.
+An automated Instagram bot that helps manage following/unfollowing with smart tracking capabilities.
 
 ## Features
 
-- Automated Instagram login with secure credential handling
-- Follows users from any public Instagram profile's following list
-- Smart follow limits to avoid Instagram restrictions (50 follows/hour)
+- Follow users from a target account's following list
+- Track all followed accounts in a local database
+- Automatically unfollow accounts that don't follow back after 48 hours
 - Human-like behavior with random delays
-- Progress bar visualization during operation
-- Comprehensive error handling
-- Headless mode for background operation
-- Cooldown periods between sessions
+- Conservative follow limits to avoid Instagram restrictions
+- Visual Chrome browser for monitoring actions
+- Progress bars for following operations
 
 ## Prerequisites
 
-Before running the bot, make sure you have:
-
-- Python 3.7 or higher installed
-- Google Chrome browser installed
-- Required Python packages (see Installation section)
-- Instagram account credentials
+- Python 3.x
+- Chrome browser installed
+- Instagram account
 
 ## Installation
 

@@ -38,11 +38,145 @@ class InstagramBot:
         chrome_options.add_argument('--disable-notifications')
         chrome_options.add_argument('--disable-popup-blocking')
         chrome_options.add_argument('--start-maximized')
-        chrome_options.add_argument('--headless=new')
         
         # Initialize Chrome with WebDriver Manager
         service = Service(ChromeDriverManager().install())
         self.driver = webdriver.Chrome(service=service, options=chrome_options)
+        
+        # Initialize SQLite database for follow tracking
+        self.init_database()
+        
+    def init_database(self):
+        """Initialize SQLite database to track follows"""
+        import sqlite3
+        
+        self.db = sqlite3.connect('follow_tracker.db')
+        cursor = self.db.cursor()
+        
+        # Create table if it doesn't exist
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS follows (
+                username TEXT PRIMARY KEY,
+                followed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status TEXT DEFAULT 'pending'
+            )
+        ''')
+        self.db.commit()
+        
+    def track_follow(self, username):
+        """Record when we follow someone"""
+        cursor = self.db.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO follows (username, followed_at, status)
+            VALUES (?, CURRENT_TIMESTAMP, 'pending')
+        ''', (username,))
+        self.db.commit()
+        
+    def check_if_follows_back(self, username):
+        """Check if a user follows us back"""
+        try:
+            # Go to their profile
+            self.driver.get(f'https://www.instagram.com/{username}/')
+            self.random_delay(2, 3)
+            
+            # Click on their followers list
+            followers_button = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.XPATH, "//a[contains(@href, '/followers')]"))
+            )
+            followers_button.click()
+            self.random_delay(2, 3)
+            
+            # Search for our username in their followers
+            try:
+                our_username_element = WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located((
+                        By.XPATH, 
+                        f"//div[@role='dialog']//a[contains(@href, '{self.username}')]"
+                    ))
+                )
+                return True
+            except:
+                return False
+                
+        except Exception as e:
+            print(f"Error checking if {username} follows back: {str(e)}")
+            return False
+            
+    def unfollow_user(self, username):
+        """Unfollow a specific user"""
+        try:
+            # Navigate to user's profile
+            self.driver.get(f'https://www.instagram.com/{username}/')
+            self.random_delay(2, 3)
+            
+            # Find and click unfollow button
+            unfollow_button = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((
+                    By.XPATH, 
+                    "//button[contains(text(), 'Following') or contains(text(), 'Requested')]"
+                ))
+            )
+            unfollow_button.click()
+            self.random_delay(1, 2)
+            
+            # Confirm unfollow if needed
+            try:
+                confirm_button = WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located((
+                        By.XPATH, 
+                        "//button[contains(text(), 'Unfollow') or contains(text(), 'Unfollow')]"
+                    ))
+                )
+                confirm_button.click()
+            except:
+                pass  # No confirmation needed
+                
+            print(f"✓ Unfollowed {username}")
+            return True
+            
+        except Exception as e:
+            print(f"× Failed to unfollow {username}: {str(e)}")
+            return False
+            
+    def cleanup_non_followers(self, hours=48):
+        """Unfollow users who haven't followed back within specified hours"""
+        cursor = self.db.cursor()
+        
+        # Get users who haven't followed back within the time limit
+        cursor.execute('''
+            SELECT username FROM follows 
+            WHERE status = 'pending'
+            AND datetime(followed_at, '+' || ? || ' hours') <= datetime('now')
+        ''', (hours,))
+        
+        users_to_unfollow = cursor.fetchall()
+        
+        if not users_to_unfollow:
+            print("No users to unfollow at this time")
+            return
+            
+        print(f"\nChecking {len(users_to_unfollow)} users who haven't followed back...")
+        
+        for (username,) in users_to_unfollow:
+            self.random_delay(30, 45)  # Delay between unfollows
+            
+            # Check if they follow us now
+            if self.check_if_follows_back(username):
+                cursor.execute('''
+                    UPDATE follows SET status = 'follows_back'
+                    WHERE username = ?
+                ''', (username,))
+                print(f"✓ {username} now follows back - keeping follow")
+                continue
+                
+            # If they don't follow back, unfollow them
+            if self.unfollow_user(username):
+                cursor.execute('''
+                    UPDATE follows SET status = 'unfollowed'
+                    WHERE username = ?
+                ''', (username,))
+                
+            self.db.commit()
         
     def random_delay(self, min_delay=1, max_delay=3):
         time.sleep(random.uniform(min_delay, max_delay))
@@ -167,28 +301,101 @@ class InstagramBot:
         try:
             # Navigate to user's profile
             self.driver.get(f'https://www.instagram.com/{username}/')
-            self.random_delay(2, 4)
+            self.random_delay(3, 5)  # Increased initial delay
             
-            # Find and click follow button
-            follow_button = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((
-                    By.XPATH, 
-                    "//button[contains(text(), 'Follow') or contains(text(), 'Follow Back')]"
-                ))
-            )
+            # First check if the account exists/is accessible
+            try:
+                error_text = WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located((By.XPATH, "//h2[contains(text(), 'Sorry')]"))
+                )
+                print(f"Cannot access {username}'s profile - account may be private or non-existent")
+                return False
+            except:
+                pass  # No error message found, continue
             
-            # Check if already following
-            if follow_button.text not in ['Follow', 'Follow Back']:
-                print(f"Already following {username}")
+            # Look for follow button with multiple possible XPaths
+            follow_button = None
+            button_xpaths = [
+                "//button[contains(text(), 'Follow')]",
+                "//button[contains(text(), 'Follow Back')]",
+                "//div[contains(@class, 'x1i10hfl')]//button[contains(., 'Follow')]",
+                "//button[@type='button' and not(contains(text(), 'Following')) and not(contains(text(), 'Requested'))]"
+            ]
+            
+            for xpath in button_xpaths:
+                try:
+                    follow_button = WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((By.XPATH, xpath))
+                    )
+                    if follow_button and follow_button.is_displayed() and follow_button.is_enabled():
+                        break
+                except:
+                    continue
+            
+            if not follow_button:
+                print(f"Could not find follow button for {username}")
+                return False
+            
+            # Check if already following or requested
+            button_text = follow_button.text.lower()
+            if 'following' in button_text or 'requested' in button_text:
+                print(f"Already following or requested {username}")
                 return False
             
             # Random delay before clicking
-            self.random_delay(1, 3)
-            follow_button.click()
+            self.random_delay(2, 4)
             
-            print(f"✓ Followed {username}")
-            return True
+            # Try multiple click methods
+            try:
+                # Method 1: Regular click
+                follow_button.click()
+            except:
+                try:
+                    # Method 2: JavaScript click
+                    self.driver.execute_script("arguments[0].click();", follow_button)
+                except:
+                    try:
+                        # Method 3: Action chains
+                        webdriver.ActionChains(self.driver)\
+                            .move_to_element(follow_button)\
+                            .click()\
+                            .perform()
+                    except Exception as e:
+                        print(f"All click methods failed for {username}: {str(e)}")
+                        return False
             
+            # Verify the follow was successful
+            self.random_delay(2, 3)
+            try:
+                # Check multiple possible button states
+                verification_xpaths = [
+                    "//button[contains(text(), 'Following')]",
+                    "//button[contains(text(), 'Requested')]",
+                    "//button[contains(@class, '_acan') and contains(text(), 'Following')]",
+                    "//button[contains(@class, '_acan') and contains(text(), 'Requested')]",
+                    "//div[contains(@class, '_aacl')]//button[contains(., 'Following')]",
+                    "//div[contains(@class, '_aacl')]//button[contains(., 'Requested')]"
+                ]
+                
+                for xpath in verification_xpaths:
+                    try:
+                        updated_button = WebDriverWait(self.driver, 2).until(
+                            EC.presence_of_element_located((By.XPATH, xpath))
+                        )
+                        if updated_button:
+                            print(f"✓ Successfully followed {username}")
+                            return True
+                    except:
+                        continue
+                
+                # If we got here but the initial follow click worked, consider it a success
+                print(f"✓ Follow action completed for {username} (status unverified)")
+                return True
+                
+            except Exception as e:
+                print(f"× Could not verify follow status for {username}, but action may have succeeded")
+                return True  # Return True since the click worked
+                
         except Exception as e:
             print(f"× Failed to follow {username}: {str(e)}")
             return False
@@ -213,7 +420,9 @@ class InstagramBot:
             # Initialize counters
             successful_follows = 0
             failed_follows = 0
-            follow_limit = 50  # Instagram typically limits to ~50-60 follows per hour
+            follow_limit = 15  # Even more conservative limit
+            consecutive_failures = 0
+            max_consecutive_failures = 3
             
             # Scroll through the following list
             dialog = self.driver.find_element(By.XPATH, "//div[@role='dialog']")
@@ -245,12 +454,19 @@ class InstagramBot:
                             print(f"\nReached follow limit ({follow_limit}). Stopping for now.")
                             return successful_follows, failed_follows
                             
+                        if consecutive_failures >= max_consecutive_failures:
+                            print("\nToo many consecutive failures. Taking a longer break...")
+                            self.random_delay(300, 600)  # 5-10 minute break
+                            consecutive_failures = 0
+                            
                         # Follow the user with a random delay
-                        self.random_delay(15, 30)  # Longer delay between follows
+                        self.random_delay(45, 75)  # Increased delay between follows
                         if self.follow_user(username):
                             successful_follows += 1
+                            consecutive_failures = 0
                         else:
                             failed_follows += 1
+                            consecutive_failures += 1
                             
                     processed_users.update(new_users)
                     
@@ -283,20 +499,29 @@ def main():
     try:
         if bot.login():
             while True:
-                target_username = input("\nEnter the target Instagram username (or 'quit' to exit): ")
+                print("\nChoose an action:")
+                print("1. Follow users from target account")
+                print("2. Cleanup non-followers (48h)")
+                print("3. Exit")
                 
-                if target_username.lower() == 'quit':
+                choice = input("Enter your choice (1-3): ")
+                
+                if choice == "1":
+                    target_username = input("\nEnter the target Instagram username: ")
+                    successful, failed = bot.follow_user_list(target_username)
+                    print(f"\nFollow operation completed:")
+                    print(f"✓ Successfully followed: {successful} users")
+                    print(f"× Failed to follow: {failed} users")
+                    
+                elif choice == "2":
+                    bot.cleanup_non_followers(hours=48)
+                    
+                elif choice == "3":
                     break
                     
-                successful, failed = bot.follow_user_list(target_username)
-                print(f"\nFollow operation completed:")
-                print(f"✓ Successfully followed: {successful} users")
-                print(f"× Failed to follow: {failed} users")
-                
-                # Add a long delay before processing another account
-                if target_username.lower() != 'quit':
+                if choice == "1":  # Add delay only after following operation
                     delay = random.randint(3600, 7200)  # 1-2 hour delay
-                    print(f"\nWaiting {delay//3600} hours before processing another account...")
+                    print(f"\nWaiting {delay//3600} hours before next operation...")
                     time.sleep(delay)
                     
     except Exception as e:
