@@ -129,6 +129,7 @@ instagram-auto-follow-bot/
 ## Operation Details
 
 The bot follows these steps:
+
 1. Launches Chrome in headless mode
 2. Logs into Instagram using your credentials
 3. Navigates to the target user's profile
